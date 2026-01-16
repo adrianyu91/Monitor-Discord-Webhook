@@ -5,8 +5,8 @@ const app = express();
 app.use(express.json());
 
 // Configuration - REPLACE THESE!
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || 'https://discord.com/api/webhooks/1461833728190976124/t-B_1716eFqBYDvs2eG_M3JiB-A51cnx2sLjkiMm0k38liQqQeYzDmecjvVw0LMPtbgG';
-const SECRET_KEY = process.env.SECRET_KEY || 'superSecret123XYZ'; // Change this to something random!
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL 
+const SECRET_KEY = process.env.SECRET_KEY;
 
 // Site URL builders
 const siteUrls = {
