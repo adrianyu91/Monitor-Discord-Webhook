@@ -39,9 +39,9 @@ try {
       const [ip, port, username, password] = line.split(':');
       return `http://${username}:${password}@${ip}:${port}`;
     });
-  console.log(`✅ Loaded ${proxies.length} proxies`);
+  console.log(`? Loaded ${proxies.length} proxies`);
 } catch (error) {
-  console.log('⚠️ No proxies.txt found, will fetch without proxy');
+  console.log('?? No proxies.txt found, will fetch without proxy');
 }
 
 // Get random proxy
@@ -62,9 +62,19 @@ const siteUrls = {
     name: 'Best Buy Canada',
     color: 0xFFF200 // Best Buy yellow
   },
+  bestbuy: {
+    url: (productId) => `https://www.bestbuy.com/site/-/${productId}.p`,
+    name: 'Best Buy US',
+    color: 0xFFF200 // Best Buy yellow
+  },
   amazonca: {
     url: (productId) => `https://www.amazon.ca/dp/${productId}`,
     name: 'Amazon Canada',
+    color: 0xFF9900 // Amazon orange
+  },
+  amazon: {
+    url: (productId) => `https://www.amazon.com/dp/${productId}`,
+    name: 'Amazon US',
     color: 0xFF9900 // Amazon orange
   },
   canadiantire: {
@@ -102,9 +112,28 @@ function parseStellarMessage(message) {
     if (embed.fields && embed.fields.length > 0) {
       const siteField = embed.fields.find(f => f.name === 'Site');
       const productField = embed.fields.find(f => f.name === 'Product');
+      const skuField = embed.fields.find(f => f.name === 'Title/SKU');
       
       if (siteField) site = siteField.value.toLowerCase();
-      if (productField) productId = productField.value;
+      
+      // Try to get product ID from Title/SKU field first
+      if (skuField) {
+        productId = skuField.value;
+      }
+      // Fallback to Product field
+      else if (productField) {
+        const value = productField.value;
+        // If it's a URL, try to extract the SKU
+        if (value.includes('http')) {
+          // Extract SKU from URL (e.g., 6643538 from https://www.bestbuy.com/site/-/6643538.p)
+          const match = value.match(/\/(\d+)\.p/);
+          if (match) {
+            productId = match[1];
+          }
+        } else {
+          productId = value;
+        }
+      }
     }
     
     // Get timestamp from footer
@@ -184,10 +213,10 @@ function isStellarMessage(message) {
 
 // Bot ready event
 client.once('ready', () => {
-  console.log(`🤖 Bot logged in as ${client.user.tag}`);
-  console.log(`📡 Monitoring channels:`);
+  console.log(`?? Bot logged in as ${client.user.tag}`);
+  console.log(`?? Monitoring channels:`);
   CHANNEL_MAPPINGS.forEach(mapping => {
-    console.log(`   ${mapping.name}: ${mapping.source} → ${mapping.target}`);
+    console.log(`   ${mapping.name}: ${mapping.source} ? ${mapping.target}`);
   });
 });
 
@@ -203,7 +232,7 @@ client.on('messageCreate', async (message) => {
     // Only process Stellar webhook messages
     if (!isStellarMessage(message)) return;
     
-    console.log(`📥 Stellar message detected in ${channelMapping.name} channel, reformatting...`);
+    console.log(`?? Stellar message detected in ${channelMapping.name} channel, reformatting...`);
     
     // Debug: log the full message structure
     console.log('Message content:', message.content);
@@ -218,58 +247,80 @@ client.on('messageCreate', async (message) => {
     const { site, productId, timestamp } = parseStellarMessage(message);
     
     if (!site || !productId) {
-      console.log('⚠️ Could not parse site or product ID');
+      console.log('?? Could not parse site or product ID');
       return;
+    }
+    // Amazon alerts: raw forward only
+    if (site && site.startsWith('amazon')) {
+      console.log(`?? Amazon alert (${site}) — raw forwarding`);
+
+      const targetChannel = await client.channels.fetch(channelMapping.target);
+      if (!targetChannel) return;
+
+      const rolePing = channelMapping.roleId ? `<@&${channelMapping.roleId}>` : '';
+
+      await targetChannel.send({
+        content: rolePing,
+        embeds: message.embeds
+      });
+
+      return; // STOP all further processing for Amazon
     }
     
     // Get site info
     const siteInfo = getSiteInfo(site, productId);
     
     if (!siteInfo) {
-      console.log(`⚠️ No URL builder configured for ${site}`);
+      console.log(`?? No URL builder configured for ${site}`);
       return;
     }
     
-    // Fetch product name from the URL using proxy
+    // Fetch product name from the URL using proxy (skip for Best Buy and Amazon - too slow)
     let productName = 'Product';
-    try {
-      const proxyUrl = getRandomProxy();
-      const fetchOptions = {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-        }
-      };
-      
-      // Add proxy if available
-      if (proxyUrl) {
-        fetchOptions.agent = new HttpsProxyAgent(proxyUrl);
-        console.log(`🔄 Using proxy: ${proxyUrl.split('@')[1]}`);
-      }
-      
-      const response = await fetch(siteInfo.url, fetchOptions);
-      const html = await response.text();
-      
-      // Try to extract title from HTML
-      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-      if (titleMatch && titleMatch[1]) {
-        productName = titleMatch[1]
-          .replace(/- Walmart\.ca/gi, '')
-          .replace(/- Best Buy Canada/gi, '')
-          .replace(/- Amazon\.ca/gi, '')
-          .replace(/- Canadian Tire/gi, '')
-          .replace(/- Toys R Us/gi, '')
-          .replace(/\|.*$/g, '')
-          .trim();
+    const skipFetch = site.includes('bestbuy') || site.includes('amazon'); // Skip fetching for Best Buy and Amazon sites
+    
+    if (!skipFetch) {
+      try {
+        const proxyUrl = getRandomProxy();
+        const fetchOptions = {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+          }
+        };
         
-        // If still too long, truncate
-        if (productName.length > 100) {
-          productName = productName.substring(0, 97) + '...';
+        // Add proxy if available
+        if (proxyUrl) {
+          fetchOptions.agent = new HttpsProxyAgent(proxyUrl);
+          console.log(`?? Using proxy: ${proxyUrl.split('@')[1]}`);
         }
+        
+        const response = await fetch(siteInfo.url, fetchOptions);
+        const html = await response.text();
+        
+        // Try to extract title from HTML
+        const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+        if (titleMatch && titleMatch[1]) {
+          productName = titleMatch[1]
+            .replace(/- Walmart\.ca/gi, '')
+            .replace(/- Best Buy Canada/gi, '')
+            .replace(/- Amazon\.ca/gi, '')
+            .replace(/- Canadian Tire/gi, '')
+            .replace(/- Toys R Us/gi, '')
+            .replace(/\|.*$/g, '')
+            .trim();
+          
+          // If still too long, truncate
+          if (productName.length > 100) {
+            productName = productName.substring(0, 97) + '...';
+          }
+        }
+      } catch (error) {
+        console.log('?? Could not fetch product name:', error.message);
       }
-    } catch (error) {
-      console.log('⚠️ Could not fetch product name:', error.message);
+    } else {
+      console.log('?? Skipping product fetch for Best Buy/Amazon (speed optimization)');
     }
     
     // Calculate time since detection
@@ -293,20 +344,20 @@ client.on('messageCreate', async (message) => {
       .setTitle(`${productName}`)
       .setURL(siteInfo.url)
       .setColor(siteInfo.color)
-      .setDescription(`**✅ IN STOCK NOW**\n\n**[Click here to view & purchase](${siteInfo.url})**`)
+      .setDescription(`**IN STOCK NOW**\n\n**[Click here to view & purchase](${siteInfo.url})**`)
       .addFields(
         { name: 'Retailer', value: siteInfo.name, inline: true },
         { name: 'Product ID', value: `\`${productId}\``, inline: true },
         { name: 'Detected', value: timeAgoText, inline: true }
       )
-      .setFooter({ text: `CCZ Monitor • Detected at ${timestamp || now.toISOString()}` })
+      .setFooter({ text: `Stellar AIO Monitor • Detected at ${timestamp || now.toISOString()}` })
       .setTimestamp();
     
     // Get the target channel from the mapping
     const targetChannel = await client.channels.fetch(channelMapping.target);
     
     if (!targetChannel) {
-      console.error(`❌ Target channel not found for ${channelMapping.name}!`);
+      console.error(`? Target channel not found for ${channelMapping.name}!`);
       return;
     }
     
@@ -317,10 +368,10 @@ client.on('messageCreate', async (message) => {
       embeds: [embed] 
     });
     
-    console.log(`✅ Reformatted message sent to ${channelMapping.name} alerts: ${site} - ${productId}`);
+    console.log(`? Reformatted message sent to ${channelMapping.name} alerts: ${site} - ${productId}`);
     
   } catch (error) {
-    console.error('❌ Error processing message:', error.message);
+    console.error('? Error processing message:', error.message);
   }
 });
 
