@@ -39,9 +39,9 @@ try {
       const [ip, port, username, password] = line.split(':');
       return `http://${username}:${password}@${ip}:${port}`;
     });
-  console.log(`? Loaded ${proxies.length} proxies`);
+  console.log(`✓ Loaded ${proxies.length} proxies`);
 } catch (error) {
-  console.log('?? No proxies.txt found, will fetch without proxy');
+  console.log('⚠️ No proxies.txt found, will fetch without proxy');
 }
 
 // Get random proxy
@@ -55,38 +55,43 @@ const siteUrls = {
   walmartca: {
     url: (productId) => `https://www.walmart.ca/en/ip/${productId}`,
     name: 'Walmart Canada',
-    color: 0x0071CE // Walmart blue
+    color: 0x0071CE
   },
   bestbuyca: {
     url: (productId) => `https://www.bestbuy.ca/en-ca/product/${productId}`,
     name: 'Best Buy Canada',
-    color: 0xFFF200 // Best Buy yellow
+    color: 0xFFF200
   },
   bestbuy: {
     url: (productId) => `https://www.bestbuy.com/site/-/${productId}.p`,
     name: 'Best Buy US',
-    color: 0xFFF200 // Best Buy yellow
+    color: 0xFFF200
   },
   amazonca: {
     url: (productId) => `https://www.amazon.ca/dp/${productId}`,
     name: 'Amazon Canada',
-    color: 0xFF9900 // Amazon orange
+    color: 0xFF9900
   },
   amazon: {
     url: (productId) => `https://www.amazon.com/dp/${productId}`,
     name: 'Amazon US',
-    color: 0xFF9900 // Amazon orange
+    color: 0xFF9900
   },
   canadiantire: {
     url: (productId) => `https://www.canadiantire.ca/en/pdp/${productId}.html`,
     name: 'Canadian Tire',
-    color: 0xE31E24 // CT red
+    color: 0xE31E24
   },
   toysrus: {
     url: (productId) => `https://www.toysrus.ca/en/${productId}`,
     name: 'Toys R Us',
-    color: 0xFF6B9D // Pink
+    color: 0xFF6B9D
   },
+  topdeckhero: {
+    url: (productId) => productId, // Full URL passed
+    name: 'Top Deck Hero',
+    color: 0x7B68EE
+  }
 };
 
 // Create Discord client
@@ -97,6 +102,43 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
 });
+
+// Parse changedetection.io message
+function parseChangedetectionMessage(message) {
+  const content = message.content;
+  
+  // Extract URL from the message
+  const urlMatch = content.match(/https?:\/\/[^\s]+/);
+  if (!urlMatch) return null;
+  
+  const url = urlMatch[0];
+  
+  // Determine site from URL
+  let site = 'unknown';
+  let productName = 'Product Alert';
+  
+  if (url.includes('topdeckhero.com')) {
+    site = 'topdeckhero';
+    // Extract product name from URL if possible
+    const pathParts = url.split('/');
+    const productPart = pathParts[pathParts.length - 2];
+    if (productPart) {
+      productName = productPart
+        .replace(/_/g, ' ')
+        .replace(/one piece cg/gi, 'One Piece CG')
+        .replace(/eb03/gi, 'EB-03')
+        .replace(/booster box/gi, 'Booster Box')
+        .trim();
+    }
+  }
+  
+  return {
+    url,
+    site,
+    productName,
+    type: 'changedetection'
+  };
+}
 
 // Parse Stellar's message format
 function parseStellarMessage(message) {
@@ -164,7 +206,7 @@ function parseStellarMessage(message) {
     }
   }
   
-  return { site, productId, timestamp };
+  return { site, productId, timestamp, type: 'stellar' };
 }
 
 // Build product URL and get site info
@@ -178,6 +220,12 @@ function getSiteInfo(site, productId) {
     };
   }
   return null;
+}
+
+// Check if message is from changedetection.io
+function isChangedetectionMessage(message) {
+  return message.content.includes('changedetection.io') || 
+         message.content.includes('CSS/xPath filter');
 }
 
 // Check if message is from Stellar webhook
@@ -199,24 +247,15 @@ function isStellarMessage(message) {
                        e.footer?.text?.includes('stellara')
                      );
   
-  console.log('Message check:', {
-    webhookId: hasWebhookId,
-    author: message.author.username,
-    hasContent: message.content.length > 0,
-    hasEmbeds: message.embeds.length > 0,
-    contentMatch: contentCheck,
-    embedMatch: embedCheck
-  });
-  
   return hasWebhookId && (contentCheck || embedCheck);
 }
 
 // Bot ready event
 client.once('ready', () => {
-  console.log(`?? Bot logged in as ${client.user.tag}`);
-  console.log(`?? Monitoring channels:`);
+  console.log(`🤖 Bot logged in as ${client.user.tag}`);
+  console.log(`👀 Monitoring channels:`);
   CHANNEL_MAPPINGS.forEach(mapping => {
-    console.log(`   ${mapping.name}: ${mapping.source} ? ${mapping.target}`);
+    console.log(`   ${mapping.name}: ${mapping.source} → ${mapping.target}`);
   });
 });
 
@@ -229,30 +268,69 @@ client.on('messageCreate', async (message) => {
     // Only process messages in configured source channels
     if (!channelMapping) return;
     
-    // Only process Stellar webhook messages
+    // Check if it's a changedetection.io message
+    if (isChangedetectionMessage(message)) {
+      console.log(`📊 Changedetection.io alert detected in ${channelMapping.name} channel`);
+      
+      const parsed = parseChangedetectionMessage(message);
+      if (!parsed) {
+        console.log('⚠️ Could not parse changedetection.io message');
+        return;
+      }
+      
+      const siteInfo = getSiteInfo(parsed.site, parsed.url);
+      if (!siteInfo) {
+        console.log(`⚠️ No site info for ${parsed.site}`);
+        return;
+      }
+      
+      // Create embed for changedetection.io alert
+      const embed = new EmbedBuilder()
+        .setTitle(parsed.productName)
+        .setURL(parsed.url)
+        .setColor(siteInfo.color)
+        .setDescription(`**CHANGE DETECTED**\n\n**[Click here to view product](${parsed.url})**`)
+        .addFields(
+          { name: 'Retailer', value: siteInfo.name, inline: true },
+          { name: 'Monitor', value: 'Changedetection.io', inline: true },
+          { name: 'Status', value: '🔔 Update Available', inline: true }
+        )
+        .setFooter({ text: 'Changedetection.io Monitor' })
+        .setTimestamp();
+      
+      // Get target channel and send
+      const targetChannel = await client.channels.fetch(channelMapping.target);
+      if (!targetChannel) {
+        console.error(`❌ Target channel not found for ${channelMapping.name}!`);
+        return;
+      }
+      
+      const rolePing = channelMapping.roleId ? `<@&${channelMapping.roleId}>` : '';
+      await targetChannel.send({ 
+        content: rolePing,
+        embeds: [embed] 
+      });
+      
+      console.log(`✅ Changedetection alert sent to ${channelMapping.name}`);
+      return;
+    }
+    
+    // Check if it's a Stellar message
     if (!isStellarMessage(message)) return;
     
-    console.log(`?? Stellar message detected in ${channelMapping.name} channel, reformatting...`);
-    
-    // Debug: log the full message structure
-    console.log('Message content:', message.content);
-    console.log('Embed count:', message.embeds.length);
-    if (message.embeds.length > 0) {
-      console.log('Embed description:', message.embeds[0].description);
-      console.log('Embed fields:', message.embeds[0].fields);
-      console.log('Embed title:', message.embeds[0].title);
-    }
+    console.log(`🔔 Stellar message detected in ${channelMapping.name} channel, reformatting...`);
     
     // Parse the message
     const { site, productId, timestamp } = parseStellarMessage(message);
     
     if (!site || !productId) {
-      console.log('?? Could not parse site or product ID');
+      console.log('⚠️ Could not parse site or product ID');
       return;
     }
+    
     // Amazon alerts: raw forward only
     if (site && site.startsWith('amazon')) {
-      console.log(`?? Amazon alert (${site}) — raw forwarding`);
+      console.log(`📦 Amazon alert (${site}) — raw forwarding`);
 
       const targetChannel = await client.channels.fetch(channelMapping.target);
       if (!targetChannel) return;
@@ -264,20 +342,20 @@ client.on('messageCreate', async (message) => {
         embeds: message.embeds
       });
 
-      return; // STOP all further processing for Amazon
+      return;
     }
     
     // Get site info
     const siteInfo = getSiteInfo(site, productId);
     
     if (!siteInfo) {
-      console.log(`?? No URL builder configured for ${site}`);
+      console.log(`⚠️ No URL builder configured for ${site}`);
       return;
     }
     
     // Fetch product name from the URL using proxy (skip for Best Buy and Amazon - too slow)
     let productName = 'Product';
-    const skipFetch = site.includes('bestbuy') || site.includes('amazon'); // Skip fetching for Best Buy and Amazon sites
+    const skipFetch = site.includes('bestbuy') || site.includes('amazon');
     
     if (!skipFetch) {
       try {
@@ -290,16 +368,14 @@ client.on('messageCreate', async (message) => {
           }
         };
         
-        // Add proxy if available
         if (proxyUrl) {
           fetchOptions.agent = new HttpsProxyAgent(proxyUrl);
-          console.log(`?? Using proxy: ${proxyUrl.split('@')[1]}`);
+          console.log(`🔒 Using proxy: ${proxyUrl.split('@')[1]}`);
         }
         
         const response = await fetch(siteInfo.url, fetchOptions);
         const html = await response.text();
         
-        // Try to extract title from HTML
         const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
         if (titleMatch && titleMatch[1]) {
           productName = titleMatch[1]
@@ -311,16 +387,13 @@ client.on('messageCreate', async (message) => {
             .replace(/\|.*$/g, '')
             .trim();
           
-          // If still too long, truncate
           if (productName.length > 100) {
             productName = productName.substring(0, 97) + '...';
           }
         }
       } catch (error) {
-        console.log('?? Could not fetch product name:', error.message);
+        console.log('⚠️ Could not fetch product name:', error.message);
       }
-    } else {
-      console.log('?? Skipping product fetch for Best Buy/Amazon (speed optimization)');
     }
     
     // Calculate time since detection
@@ -353,25 +426,23 @@ client.on('messageCreate', async (message) => {
       .setFooter({ text: `Stellar AIO Monitor • Detected at ${timestamp || now.toISOString()}` })
       .setTimestamp();
     
-    // Get the target channel from the mapping
     const targetChannel = await client.channels.fetch(channelMapping.target);
     
     if (!targetChannel) {
-      console.error(`? Target channel not found for ${channelMapping.name}!`);
+      console.error(`❌ Target channel not found for ${channelMapping.name}!`);
       return;
     }
     
-    // Send the formatted embed to TARGET channel with role ping
     const rolePing = channelMapping.roleId ? `<@&${channelMapping.roleId}>` : '';
     await targetChannel.send({ 
       content: rolePing,
       embeds: [embed] 
     });
     
-    console.log(`? Reformatted message sent to ${channelMapping.name} alerts: ${site} - ${productId}`);
+    console.log(`✅ Reformatted message sent to ${channelMapping.name} alerts: ${site} - ${productId}`);
     
   } catch (error) {
-    console.error('? Error processing message:', error.message);
+    console.error('❌ Error processing message:', error.message);
   }
 });
 
